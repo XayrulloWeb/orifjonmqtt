@@ -1,0 +1,37 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Device {
+  id                Int      @id @default(autoincrement())
+  deviceIdStr       String   @unique
+  name              String   @default("Новое устройство")
+  moistureThreshold Int      @default(40)
+  isAutoMode        Boolean  @default(true)
+  lastSeen          DateTime?
+  lastMoisture      Int?
+
+  measurements SensorData[]
+  logs         PumpLog[]
+}
+
+model SensorData {
+  id        Int      @id @default(autoincrement())
+  moisture  Int
+  createdAt DateTime @default(now())
+  device    Device   @relation(fields: [deviceId], references: [id])
+  deviceId  Int
+}
+
+model PumpLog {
+  id        Int      @id @default(autoincrement())
+  action    String
+  mode      String
+  createdAt DateTime @default(now())
+  device    Device   @relation(fields: [deviceId], references: [id])
+  deviceId  Int
+}
