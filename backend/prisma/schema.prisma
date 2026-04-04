@@ -9,9 +9,12 @@ datasource db {
 model Device {
   id                Int      @id @default(autoincrement())
   deviceIdStr       String   @unique
-  name              String   @default("Новое устройство")
+  name              String   @default("New device")
   moistureThreshold Int      @default(40)
   isAutoMode        Boolean  @default(true)
+  pumpState         String   @default("OFF")
+  pumpUpdatedAt     DateTime?
+  lastCommandReason String?
   lastSeen          DateTime?
   lastMoisture      Int?
 

@@ -17,11 +17,13 @@ const MQTT_PORT = Number(process.env.MQTT_PORT || 1883);
 const AUTO_OFF_HYSTERESIS = Number(process.env.AUTO_OFF_HYSTERESIS || 5);
 const AUTO_ON_COOLDOWN_MS = Number(process.env.AUTO_ON_COOLDOWN_MS || 30000);
 const AUTO_MAX_ON_MS = Number(process.env.AUTO_MAX_ON_MS || 120000);
+const MIN_MOISTURE = 0;
+const MAX_MOISTURE = 100;
+const MIN_THRESHOLD = 10;
+const MAX_THRESHOLD = 90;
+const PUMP_ACTIONS = new Set(['ON', 'OFF']);
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
-
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
@@ -39,17 +41,59 @@ app.use(express.json());
 
 let aedes;
 let mqttClient;
-let pumpState = 'OFF';
-let lastAutoOnAt = 0;
 let autoOffTimer = null;
 
 function clearAutoOffTimer() {
-  if (!autoOffTimer) {
-    return;
+  if (autoOffTimer) {
+    clearTimeout(autoOffTimer);
+    autoOffTimer = null;
+  }
+}
+
+function validateSettingsPayload(body) {
+  if (!body || typeof body !== 'object') {
+    return 'Request body is required';
   }
 
-  clearTimeout(autoOffTimer);
-  autoOffTimer = null;
+  if (typeof body.isAutoMode !== 'boolean') {
+    return 'isAutoMode must be a boolean';
+  }
+
+  if (typeof body.moistureThreshold !== 'number' || !Number.isFinite(body.moistureThreshold)) {
+    return 'moistureThreshold must be a number';
+  }
+
+  if (!Number.isInteger(body.moistureThreshold)) {
+    return 'moistureThreshold must be an integer';
+  }
+
+  if (body.moistureThreshold < MIN_THRESHOLD || body.moistureThreshold > MAX_THRESHOLD) {
+    return `moistureThreshold must be in range ${MIN_THRESHOLD}..${MAX_THRESHOLD}`;
+  }
+
+  return null;
+}
+
+function isValidMoisture(moisture) {
+  return Number.isInteger(moisture) && moisture >= MIN_MOISTURE && moisture <= MAX_MOISTURE;
+}
+
+function publishToMqtt(topic, payload) {
+  return new Promise((resolve, reject) => {
+    if (!mqttClient || !mqttClient.connected) {
+      reject(new Error('MQTT client is not connected'));
+      return;
+    }
+
+    mqttClient.publish(topic, payload, { qos: 1 }, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
 }
 
 async function getDevice() {
@@ -88,85 +132,132 @@ async function getDashboardPayload() {
     settings: {
       isAutoMode: device.isAutoMode,
       moistureThreshold: device.moistureThreshold,
+      pumpState: device.pumpState,
+      pumpUpdatedAt: device.pumpUpdatedAt,
+      lastCommandReason: device.lastCommandReason,
     },
-    pumpState,
+    pumpState: device.pumpState,
   };
 }
 
 async function emitDashboardUpdate() {
   try {
-    const payload = await getDashboardPayload();
-    io.emit('dashboard:update', payload);
+    io.emit('dashboard:update', await getDashboardPayload());
   } catch (error) {
     console.error('Failed to emit dashboard update:', error);
   }
 }
 
-function scheduleAutoOff(deviceId) {
-  clearAutoOffTimer();
+async function enforceTimedAutoOff(deviceId) {
+  const device = await prisma.device.findUnique({ where: { id: deviceId } });
+  if (!device || device.pumpState !== 'ON') {
+    return;
+  }
 
-  autoOffTimer = setTimeout(async () => {
-    if (pumpState !== 'ON') {
-      return;
-    }
-
-    try {
-      await publishPumpAction({
-        action: 'OFF',
-        mode: 'AUTO',
-        deviceId,
-        reason: 'max_on_timeout',
-      });
-
-      await emitDashboardUpdate();
-    } catch (error) {
-      console.error('AUTO OFF timeout error:', error);
-    }
-  }, AUTO_MAX_ON_MS);
-}
-
-async function initializePumpState() {
-  const latestLog = await prisma.pumpLog.findFirst({
-    orderBy: { id: 'desc' },
+  await publishPumpAction({
+    action: 'OFF',
+    mode: 'SYSTEM',
+    deviceId,
+    reason: 'max_on_timeout',
   });
 
-  if (latestLog?.action === 'ON' || latestLog?.action === 'OFF') {
-    pumpState = latestLog.action;
+  await emitDashboardUpdate();
+}
+
+function scheduleAutoOff(deviceId, delayMs = AUTO_MAX_ON_MS) {
+  clearAutoOffTimer();
+
+  autoOffTimer = setTimeout(() => {
+    void enforceTimedAutoOff(deviceId).catch((error) => {
+      console.error('Timed auto OFF error:', error);
+    });
+  }, Math.max(0, delayMs));
+}
+
+async function restoreAutoOffIfNeeded() {
+  const device = await getDevice();
+
+  if (device.pumpState !== 'ON') {
+    return;
   }
+
+  if (!device.pumpUpdatedAt) {
+    scheduleAutoOff(device.id);
+    return;
+  }
+
+  const elapsed = Date.now() - new Date(device.pumpUpdatedAt).getTime();
+  const remaining = AUTO_MAX_ON_MS - elapsed;
+
+  if (remaining <= 0) {
+    await enforceTimedAutoOff(device.id);
+    return;
+  }
+
+  scheduleAutoOff(device.id, remaining);
 }
 
 async function publishPumpAction({ action, mode, deviceId, reason }) {
-  if (!mqttClient) {
-    throw new Error('MQTT client is not initialized');
+  if (!PUMP_ACTIONS.has(action)) {
+    throw new Error('Invalid pump action');
   }
 
-  if (action === pumpState) {
-    return false;
+  const device = await prisma.device.findUnique({ where: { id: deviceId } });
+  if (!device) {
+    throw new Error('Device not found');
   }
 
-  mqttClient.publish('smart_watering/pump', action);
+  if (device.pumpState === action) {
+    return { changed: false, device };
+  }
 
-  await prisma.pumpLog.create({
-    data: {
-      action,
-      mode,
-      deviceId,
-    },
-  });
+  await publishToMqtt('smart_watering/pump', action);
 
-  pumpState = action;
+  const now = new Date();
+  const [_, updatedDevice] = await prisma.$transaction([
+    prisma.pumpLog.create({
+      data: {
+        action,
+        mode,
+        deviceId,
+      },
+    }),
+    prisma.device.update({
+      where: { id: deviceId },
+      data: {
+        pumpState: action,
+        pumpUpdatedAt: now,
+        lastCommandReason: reason || null,
+      },
+    }),
+  ]);
 
-  if (mode === 'AUTO' && action === 'ON') {
-    lastAutoOnAt = Date.now();
+  if (action === 'ON') {
     scheduleAutoOff(deviceId);
-  }
-
-  if (action === 'OFF') {
+  } else {
     clearAutoOffTimer();
   }
 
   console.log(`Pump ${action} (${mode})${reason ? ` - ${reason}` : ''}`);
-  return true;
+  return { changed: true, device: updatedDevice };
+}
+
+async function canAutoTurnOn(deviceId) {
+  const lastAutoOn = await prisma.pumpLog.findFirst({
+    where: {
+      deviceId,
+      mode: 'AUTO',
+      action: 'ON',
+    },
+    orderBy: { id: 'desc' },
+  });
+
+  if (!lastAutoOn) {
+    return true;
+  }
+
+  const elapsed = Date.now() - new Date(lastAutoOn.createdAt).getTime();
+  return elapsed >= AUTO_ON_COOLDOWN_MS;
 }
 
 async function handleMoistureMessage(topic, message) {
@@ -175,7 +266,9 @@ async function handleMoistureMessage(topic, message) {
   }
 
   const moisture = Number.parseInt(message.toString(), 10);
-  if (Number.isNaN(moisture)) {
+
+  if (!isValidMoisture(moisture)) {
+    console.warn(`Ignored moisture value out of range: ${message.toString()}`);
     return;
   }
 
@@ -201,9 +294,8 @@ async function handleMoistureMessage(topic, message) {
     if (device.isAutoMode) {
       const shouldTurnOn = moisture < device.moistureThreshold;
       const shouldTurnOff = moisture >= device.moistureThreshold + AUTO_OFF_HYSTERESIS;
-      const cooldownPassed = Date.now() - lastAutoOnAt >= AUTO_ON_COOLDOWN_MS;
 
-      if (shouldTurnOn && pumpState !== 'ON' && cooldownPassed) {
+      if (shouldTurnOn && device.pumpState !== 'ON' && (await canAutoTurnOn(device.id))) {
         await publishPumpAction({
           action: 'ON',
           mode: 'AUTO',
@@ -212,7 +304,7 @@ async function handleMoistureMessage(topic, message) {
         });
       }
 
-      if (shouldTurnOff && pumpState === 'ON') {
+      if (shouldTurnOff && device.pumpState === 'ON') {
         await publishPumpAction({
           action: 'OFF',
           mode: 'AUTO',
@@ -230,8 +322,7 @@ async function handleMoistureMessage(topic, message) {
 
 app.get('/api/data', async (req, res) => {
   try {
-    const payload = await getDashboardPayload();
-    res.json(payload.data);
+    res.json((await getDashboardPayload()).data);
   } catch (error) {
     console.error('/api/data error:', error);
     res.status(500).json({ error: 'Failed to fetch data' });
@@ -240,8 +331,7 @@ app.get('/api/data', async (req, res) => {
 
 app.get('/api/settings', async (req, res) => {
   try {
-    const payload = await getDashboardPayload();
-    res.json(payload.settings);
+    res.json((await getDashboardPayload()).settings);
   } catch (error) {
     console.error('/api/settings GET error:', error);
     res.status(500).json({ error: 'Failed to fetch settings' });
@@ -250,26 +340,39 @@ app.get('/api/settings', async (req, res) => {
 
 app.post('/api/settings', async (req, res) => {
   try {
-    const { moistureThreshold, isAutoMode } = req.body;
+    const validationError = validateSettingsPayload(req.body);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
+    }
+
     const device = await getDevice();
 
     const updatedDevice = await prisma.device.update({
       where: { id: device.id },
       data: {
-        moistureThreshold,
-        isAutoMode,
+        moistureThreshold: req.body.moistureThreshold,
+        isAutoMode: req.body.isAutoMode,
       },
     });
 
-    if (!updatedDevice.isAutoMode && pumpState === 'ON') {
-      clearAutoOffTimer();
+    if (device.isAutoMode && !updatedDevice.isAutoMode && updatedDevice.pumpState === 'ON') {
+      await publishPumpAction({
+        action: 'OFF',
+        mode: 'SYSTEM',
+        deviceId: updatedDevice.id,
+        reason: 'auto_mode_disabled',
+      });
     }
 
     await emitDashboardUpdate();
 
+    const fresh = await prisma.device.findUnique({ where: { id: updatedDevice.id } });
     res.json({
-      isAutoMode: updatedDevice.isAutoMode,
-      moistureThreshold: updatedDevice.moistureThreshold,
+      isAutoMode: fresh.isAutoMode,
+      moistureThreshold: fresh.moistureThreshold,
+      pumpState: fresh.pumpState,
+      pumpUpdatedAt: fresh.pumpUpdatedAt,
+      lastCommandReason: fresh.lastCommandReason,
     });
   } catch (error) {
     console.error('/api/settings POST error:', error);
@@ -279,8 +382,7 @@ app.post('/api/settings', async (req, res) => {
 
 app.get('/api/logs', async (req, res) => {
   try {
-    const payload = await getDashboardPayload();
-    res.json(payload.logs);
+    res.json((await getDashboardPayload()).logs);
   } catch (error) {
     console.error('/api/logs error:', error);
     res.status(500).json({ error: 'Failed to fetch logs' });
@@ -289,15 +391,19 @@ app.get('/api/logs', async (req, res) => {
 
 app.post('/api/pump', async (req, res) => {
   try {
-    const { action } = req.body;
+    const { action } = req.body || {};
 
-    if (action !== 'ON' && action !== 'OFF') {
+    if (!PUMP_ACTIONS.has(action)) {
       return res.status(400).json({ error: 'Action must be ON or OFF' });
     }
 
     const device = await getDevice();
 
-    if (action === pumpState) {
+    if (device.isAutoMode) {
+      return res.status(409).json({ error: 'Disable auto mode before manual control' });
+    }
+
+    if (action === device.pumpState) {
       return res.json({ success: true, action, noop: true });
     }
 
@@ -328,7 +434,6 @@ async function setupMqtt() {
   aedes = await Aedes.createBroker();
 
   const mqttServer = net.createServer(aedes.handle);
-
   await new Promise((resolve, reject) => {
     mqttServer.once('error', reject);
     mqttServer.listen(MQTT_PORT, '0.0.0.0', resolve);
@@ -362,8 +467,9 @@ async function setupMqtt() {
 
 async function startServer() {
   try {
-    await initializePumpState();
+    await getDevice();
     await setupMqtt();
+    await restoreAutoOffIfNeeded();
 
     io.on('connection', async (socket) => {
       try {

@@ -43,10 +43,15 @@ function toChartData(rawData) {
     .reverse();
 }
 
+function normalizePumpState(rawPumpState) {
+  return rawPumpState === 'ON' ? 'ON' : 'OFF';
+}
+
 function App() {
   const [data, setData] = useState([]);
   const [logs, setLogs] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [pumpState, setPumpState] = useState('OFF');
 
   const applyDashboardPayload = useCallback((payload) => {
     const safePayload = payload && typeof payload === 'object' ? payload : {};
@@ -54,6 +59,7 @@ function App() {
     setData(toChartData(safePayload.data));
     setLogs(Array.isArray(safePayload.logs) ? safePayload.logs : []);
     setSettings(normalizeSettings(safePayload.settings));
+    setPumpState(normalizePumpState(safePayload.pumpState ?? safePayload.settings?.pumpState));
   }, []);
 
   const fetchData = useCallback(async () => {
@@ -68,6 +74,7 @@ function App() {
         data: resData.data,
         settings: resSettings.data,
         logs: resLogs.data,
+        pumpState: resSettings.data?.pumpState,
       });
     } catch (error) {
       console.error('Network error while fetching dashboard data', error);
@@ -106,8 +113,9 @@ function App() {
       await api.post('/pump', { action });
       toast.success(`Pump ${action === 'ON' ? 'started' : 'stopped'}`, { id: toastId });
       fetchData();
-    } catch {
-      toast.error('Server communication error', { id: toastId });
+    } catch (error) {
+      const errorText = error?.response?.data?.error || 'Server communication error';
+      toast.error(errorText, { id: toastId });
     }
   };
 
@@ -120,8 +128,9 @@ function App() {
         moistureThreshold: newThreshold,
       });
       toast.success('Settings saved');
-    } catch {
-      toast.error('Failed to save settings');
+    } catch (error) {
+      const errorText = error?.response?.data?.error || 'Failed to save settings';
+      toast.error(errorText);
       fetchData();
     }
   };
@@ -137,8 +146,13 @@ function App() {
         <Header />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-          <Moisture currentMoisture={currentMoisture} isDry={isDry} />
-          <Controls settings={settings} updateSettings={updateSettings} togglePump={togglePump} />
+          <Moisture currentMoisture={currentMoisture} isDry={isDry} pumpState={pumpState} />
+          <Controls
+            settings={settings}
+            updateSettings={updateSettings}
+            togglePump={togglePump}
+            pumpState={pumpState}
+          />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
