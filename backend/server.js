@@ -14,6 +14,7 @@ const { PrismaClient } = require('@prisma/client');
 
 const HTTP_PORT = Number(process.env.PORT || 4000);
 const MQTT_PORT = Number(process.env.MQTT_PORT || 1883);
+const MQTT_HOST = process.env.MQTT_HOST || '127.0.0.1';
 const AUTO_OFF_HYSTERESIS = Number(process.env.AUTO_OFF_HYSTERESIS || 5);
 const AUTO_ON_COOLDOWN_MS = Number(process.env.AUTO_ON_COOLDOWN_MS || 30000);
 const AUTO_MAX_ON_MS = Number(process.env.AUTO_MAX_ON_MS || 120000);
@@ -81,7 +82,9 @@ function isValidMoisture(moisture) {
 function publishToMqtt(topic, payload) {
   return new Promise((resolve, reject) => {
     if (!mqttClient || !mqttClient.connected) {
-      reject(new Error('MQTT client is not connected'));
+      const error = new Error('MQTT client is not connected');
+      error.code = 'MQTT_NOT_CONNECTED';
+      reject(error);
       return;
     }
 
@@ -419,6 +422,9 @@ app.post('/api/pump', async (req, res) => {
     res.json({ success: true, action });
   } catch (error) {
     console.error('/api/pump error:', error);
+    if (error?.code === 'MQTT_NOT_CONNECTED') {
+      return res.status(503).json({ error: 'MQTT is not connected, try again in a few seconds' });
+    }
     res.status(500).json({ error: 'Failed to control pump' });
   }
 });
@@ -445,14 +451,29 @@ async function setupMqtt() {
 
   console.log(`MQTT broker is running on port ${MQTT_PORT}`);
 
-  mqttClient = mqtt.connect(`mqtt://localhost:${MQTT_PORT}`);
+  mqttClient = mqtt.connect(`mqtt://${MQTT_HOST}:${MQTT_PORT}`, {
+    reconnectPeriod: 2000,
+  });
 
-  mqttClient.on('connect', () => {
-    console.log('Internal MQTT client connected');
-    mqttClient.subscribe('smart_watering/moisture', (error) => {
-      if (error) {
-        console.error('Failed to subscribe smart_watering/moisture:', error);
-      }
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error('Timed out waiting for internal MQTT client connection'));
+    }, 10000);
+
+    mqttClient.once('connect', () => {
+      clearTimeout(timeout);
+      console.log('Internal MQTT client connected');
+      mqttClient.subscribe('smart_watering/moisture', (error) => {
+        if (error) {
+          console.error('Failed to subscribe smart_watering/moisture:', error);
+        }
+      });
+      resolve();
+    });
+
+    mqttClient.once('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
     });
   });
 
