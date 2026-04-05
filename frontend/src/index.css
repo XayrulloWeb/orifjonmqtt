@@ -1,5 +1,145 @@
-@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Space+Grotesk:wght@400;500;700&display=swap');
+@import 'tailwindcss';
+
+:root {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
 
 body {
-  @apply bg-slate-50 text-slate-800 font-sans antialiased;
+  margin: 0;
+  min-height: 100vh;
+  font-family: 'Space Grotesk', 'Manrope', 'Segoe UI', sans-serif;
+  color: #102129;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(29, 176, 143, 0.24), transparent 35%),
+    radial-gradient(circle at 88% 10%, rgba(249, 181, 65, 0.18), transparent 38%),
+    linear-gradient(145deg, #f2f8f5 0%, #f6fbff 55%, #eef7f0 100%);
+  background-attachment: fixed;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  position: relative;
+}
+
+.app-shell::before,
+.app-shell::after {
+  content: '';
+  position: fixed;
+  z-index: -1;
+  border-radius: 999px;
+  filter: blur(90px);
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.app-shell::before {
+  width: 320px;
+  height: 320px;
+  left: -120px;
+  top: -90px;
+  background: #62d5c4;
+}
+
+.app-shell::after {
+  width: 350px;
+  height: 350px;
+  right: -150px;
+  bottom: -140px;
+  background: #ffe5a4;
+}
+
+.panel {
+  border: 1px solid rgba(151, 173, 184, 0.28);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 24px 45px -35px rgba(6, 36, 43, 0.62);
+  backdrop-filter: blur(16px);
+}
+
+.panel-soft {
+  border: 1px solid rgba(158, 182, 195, 0.3);
+  background: linear-gradient(140deg, rgba(255, 255, 255, 0.82), rgba(244, 249, 247, 0.68));
+}
+
+.icon-surface {
+  color: #0f766e;
+  background: linear-gradient(145deg, rgba(20, 184, 166, 0.2), rgba(13, 148, 136, 0.08));
+  border: 1px solid rgba(19, 151, 137, 0.25);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(255, 255, 255, 0.78);
+  padding: 0.42rem 0.72rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: #334155;
+}
+
+.badge-ok {
+  border-color: rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.12);
+  color: #0f766e;
+}
+
+.badge-warn {
+  border-color: rgba(245, 158, 11, 0.3);
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+}
+
+.badge-action {
+  border-color: rgba(13, 148, 136, 0.4);
+  background: rgba(13, 148, 136, 0.14);
+  color: #0f766e;
+}
+
+.section-entrance {
+  animation: section-rise 500ms ease both;
+}
+
+.section-entrance[data-delay='1'] {
+  animation-delay: 70ms;
+}
+
+.section-entrance[data-delay='2'] {
+  animation-delay: 130ms;
+}
+
+.section-entrance[data-delay='3'] {
+  animation-delay: 190ms;
+}
+
+.section-entrance[data-delay='4'] {
+  animation-delay: 240ms;
+}
+
+@keyframes section-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 768px) {
+  .panel,
+  .panel-soft {
+    backdrop-filter: blur(10px);
+  }
 }

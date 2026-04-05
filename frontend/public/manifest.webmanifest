@@ -1,0 +1,25 @@
+{
+  "name": "AgroIoT Aqlli Sug`orish",
+  "short_name": "AgroIoT",
+  "description": "Tuproq namligini kuzatish va nasosni boshqarish uchun aqlli sug`orish paneli.",
+  "lang": "uz",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f5f9f2",
+  "theme_color": "#0f766e",
+  "icons": [
+    {
+      "src": "/pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

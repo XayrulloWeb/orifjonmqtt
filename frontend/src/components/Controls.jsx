@@ -1,35 +1,38 @@
-﻿import { Power, Settings2 } from 'lucide-react';
+import { Bot, Gauge, Power, Settings2 } from 'lucide-react';
 
 export default function Controls({ settings, updateSettings, togglePump, pumpState }) {
   const isPumpOn = pumpState === 'ON';
   const manualLocked = settings.isAutoMode;
 
   return (
-    <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100 lg:col-span-2 flex flex-col">
-      <div className="flex items-center gap-2 mb-6 text-slate-800">
-        <Settings2 size={24} className="text-blue-500" />
-        <h3 className="text-xl font-bold">Settings and Control</h3>
+    <div className="panel section-entrance rounded-3xl p-6 lg:col-span-2" data-delay="2">
+      <div className="mb-5 flex items-center gap-2 text-slate-900">
+        <Settings2 size={22} className="text-teal-700" />
+        <h3 className="text-lg font-extrabold md:text-xl">Avtomatika va qo`lda boshqaruv</h3>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 flex-1">
-        <div className="space-y-6 bg-slate-50 p-6 rounded-2xl border border-slate-100">
-          <label className="flex justify-between items-center cursor-pointer">
-            <span className="font-bold text-slate-700">Auto watering</span>
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+        <section className="panel-soft rounded-2xl p-5">
+          <label className="mb-6 flex cursor-pointer items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-bold text-slate-700">Avto sug`orish rejimi</p>
+              <p className="text-xs text-slate-500">Namlikka qarab nasosni avtomatik boshqaradi.</p>
+            </div>
             <div className="relative inline-flex items-center">
               <input
                 type="checkbox"
-                className="sr-only peer"
+                className="peer sr-only"
                 checked={settings.isAutoMode}
                 onChange={(event) => updateSettings(event.target.checked, settings.moistureThreshold)}
               />
-              <div className="w-11 h-6 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500" />
+              <div className="h-7 w-12 rounded-full bg-slate-300 transition-colors peer-checked:bg-teal-600 peer-focus:outline-none after:absolute after:left-[3px] after:top-[3px] after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-transform peer-checked:after:translate-x-5" />
             </div>
           </label>
 
           <div>
-            <div className="flex justify-between mb-2">
-              <span className="font-bold text-slate-700">Pump start threshold</span>
-              <span className="font-black text-blue-600">{settings.moistureThreshold}%</span>
+            <div className="mb-2 flex items-center justify-between text-sm font-semibold text-slate-700">
+              <span className="flex items-center gap-2"><Gauge size={16} className="text-teal-700" /> Nasos yoqilish chegarasi</span>
+              <span className="rounded-full bg-teal-50 px-3 py-1 font-extrabold text-teal-700">{settings.moistureThreshold}%</span>
             </div>
             <input
               type="range"
@@ -37,38 +40,43 @@ export default function Controls({ settings, updateSettings, togglePump, pumpSta
               max="90"
               value={settings.moistureThreshold}
               onChange={(event) => updateSettings(settings.isAutoMode, Number.parseInt(event.target.value, 10))}
-              className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
+              className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-teal-600"
             />
           </div>
 
-          <p className="text-xs text-slate-500 font-semibold">
-            Pump state: <span className={isPumpOn ? 'text-emerald-600' : 'text-slate-700'}>{pumpState}</span>
+          <p className="mt-4 inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+            <Bot size={14} />
+            {settings.isAutoMode ? 'Avto rejim faol' : 'Qo`lda rejim faol'}
           </p>
-        </div>
+        </section>
 
-        <div className="flex flex-col justify-center space-y-4">
-          <button
-            onClick={() => togglePump('ON')}
-            disabled={manualLocked || isPumpOn}
-            className="w-full py-4 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-200 disabled:text-slate-400 text-white font-bold rounded-2xl shadow-sm transition-all flex justify-center items-center gap-2 active:scale-95"
-          >
-            <Power size={20} /> Turn pump ON
-          </button>
+        <section className="panel-soft rounded-2xl p-5">
+          <p className="mb-4 text-sm font-bold text-slate-700">Nasosni qo`lda boshqarish</p>
 
-          <button
-            onClick={() => togglePump('OFF')}
-            disabled={manualLocked || !isPumpOn}
-            className="w-full py-4 bg-rose-500 hover:bg-rose-600 disabled:bg-slate-200 disabled:text-slate-400 text-white font-bold rounded-2xl shadow-sm transition-all flex justify-center items-center gap-2 active:scale-95"
-          >
-            Turn pump OFF
-          </button>
+          <div className="space-y-3">
+            <button
+              onClick={() => togglePump('ON')}
+              disabled={manualLocked || isPumpOn}
+              className="w-full rounded-2xl bg-emerald-600 px-4 py-3 font-bold text-white shadow-sm transition-all hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+            >
+              <span className="flex items-center justify-center gap-2"><Power size={18} /> Nasosni yoqish</span>
+            </button>
 
-          {manualLocked && (
-            <p className="text-xs text-center font-medium text-slate-400">
-              Disable auto mode to send manual pump commands
-            </p>
-          )}
-        </div>
+            <button
+              onClick={() => togglePump('OFF')}
+              disabled={manualLocked || !isPumpOn}
+              className="w-full rounded-2xl bg-rose-600 px-4 py-3 font-bold text-white shadow-sm transition-all hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+            >
+              Nasosni o`chirish
+            </button>
+          </div>
+
+          <p className="mt-4 rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-xs font-medium text-slate-600">
+            {manualLocked
+              ? 'Qo`lda buyruq berishdan oldin avto rejimni o`chiring.'
+              : 'Nasos buyruqlari yuborishga tayyor.'}
+          </p>
+        </section>
       </div>
     </div>
   );

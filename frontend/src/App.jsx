@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
 import toast, { Toaster } from 'react-hot-toast';
 import { api } from './api/axios';
@@ -10,6 +10,24 @@ import Chart from './components/Chart';
 import Logs from './components/Logs';
 
 const DEFAULT_SETTINGS = { isAutoMode: true, moistureThreshold: 40 };
+const SOCKET_URL = import.meta.env.DEV
+  ? import.meta.env.VITE_SOCKET_URL || 'http://localhost:4000'
+  : '/';
+
+function localizeServerError(errorMessage) {
+  const map = {
+    'Action must be ON or OFF': 'Buyruq faqat ON yoki OFF bo`lishi kerak',
+    'Disable auto mode before manual control': 'Qo`lda boshqarishdan oldin avto rejimni o`chiring',
+    'Failed to control pump': 'Nasosni boshqarishda xato',
+    'MQTT is not connected, try again in a few seconds': 'MQTT ulanmagan, bir necha soniyadan keyin qayta urinib ko`ring',
+    'Failed to update settings': 'Sozlamalarni yangilashda xato',
+    'Failed to fetch data': 'Ma`lumotlarni olishda xato',
+    'Failed to fetch settings': 'Sozlamalarni olishda xato',
+    'Failed to fetch logs': 'Jurnallarni olishda xato',
+  };
+
+  return map[errorMessage] || errorMessage;
+}
 
 function normalizeSettings(rawSettings) {
   if (!rawSettings || typeof rawSettings !== 'object') {
@@ -34,7 +52,7 @@ function toChartData(rawData) {
   return items
     .map((item) => ({
       ...item,
-      time: new Date(item.createdAt).toLocaleTimeString('ru-RU', {
+      time: new Date(item.createdAt).toLocaleTimeString('uz-UZ', {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
@@ -52,6 +70,10 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [pumpState, setPumpState] = useState('OFF');
+  const [isSocketConnected, setIsSocketConnected] = useState(false);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
+  const [canInstall, setCanInstall] = useState(false);
 
   const applyDashboardPayload = useCallback((payload) => {
     const safePayload = payload && typeof payload === 'object' ? payload : {};
@@ -77,22 +99,79 @@ function App() {
         pumpState: resSettings.data?.pumpState,
       });
     } catch (error) {
-      console.error('Network error while fetching dashboard data', error);
+      console.error('Panel ma`lumotlarini olishda tarmoq xatosi', error);
     }
   }, [applyDashboardPayload]);
+
+  const installApp = useCallback(async () => {
+    if (!deferredInstallPrompt) {
+      return;
+    }
+
+    deferredInstallPrompt.prompt();
+    const choice = await deferredInstallPrompt.userChoice;
+
+    if (choice?.outcome === 'accepted') {
+      toast.success('Ilova o`rnatilishi boshlandi');
+    }
+
+    setDeferredInstallPrompt(null);
+    setCanInstall(false);
+  }, [deferredInstallPrompt]);
+
+  useEffect(() => {
+    const markOnline = () => setIsOnline(true);
+    const markOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', markOnline);
+    window.addEventListener('offline', markOffline);
+
+    return () => {
+      window.removeEventListener('online', markOnline);
+      window.removeEventListener('offline', markOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (event) => {
+      event.preventDefault();
+      setDeferredInstallPrompt(event);
+      setCanInstall(true);
+    };
+
+    const handleInstalled = () => {
+      setDeferredInstallPrompt(null);
+      setCanInstall(false);
+      toast.success('Ilova muvaffaqiyatli o`rnatildi');
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleInstalled);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleInstalled);
+    };
+  }, []);
 
   useEffect(() => {
     const initialFetchTimeout = setTimeout(() => {
       fetchData();
     }, 0);
 
-    const socket = io('/', {
+    const socket = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
     });
 
+    const handleConnect = () => setIsSocketConnected(true);
+    const handleDisconnect = () => setIsSocketConnected(false);
+
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
     socket.on('dashboard:update', applyDashboardPayload);
     socket.on('connect_error', (error) => {
-      console.error('Socket connection error', error);
+      setIsSocketConnected(false);
+      console.error('Socket ulanishida xato', error);
     });
 
     const fallbackInterval = setInterval(() => {
@@ -102,19 +181,25 @@ function App() {
     return () => {
       clearTimeout(initialFetchTimeout);
       clearInterval(fallbackInterval);
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('dashboard:update', applyDashboardPayload);
       socket.disconnect();
     };
   }, [applyDashboardPayload, fetchData]);
 
   const togglePump = async (action) => {
-    const toastId = toast.loading('Sending command...');
+    const toastId = toast.loading('Buyruq yuborilmoqda...');
 
     try {
       await api.post('/pump', { action });
-      toast.success(`Pump ${action === 'ON' ? 'started' : 'stopped'}`, { id: toastId });
+      toast.success(`Nasos ${action === 'ON' ? 'yoqildi' : 'o`chirildi'}`, { id: toastId });
       fetchData();
     } catch (error) {
-      const errorText = error?.response?.data?.error || 'Server communication error';
+      const serverMessage = error?.response?.data?.error;
+      const errorText = serverMessage
+        ? localizeServerError(serverMessage)
+        : 'Server bilan aloqa xatosi';
       toast.error(errorText, { id: toastId });
     }
   };
@@ -127,9 +212,12 @@ function App() {
         isAutoMode: newAutoMode,
         moistureThreshold: newThreshold,
       });
-      toast.success('Settings saved');
+      toast.success('Sozlamalar saqlandi');
     } catch (error) {
-      const errorText = error?.response?.data?.error || 'Failed to save settings';
+      const serverMessage = error?.response?.data?.error;
+      const errorText = serverMessage
+        ? localizeServerError(serverMessage)
+        : 'Sozlamalarni saqlashda xato';
       toast.error(errorText);
       fetchData();
     }
@@ -139,14 +227,34 @@ function App() {
   const isDry = currentMoisture < settings.moistureThreshold;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans p-4 md:p-8">
-      <Toaster position="top-right" />
+    <div className="app-shell min-h-screen p-4 md:p-8">
+      <Toaster
+        position="top-right"
+        toastOptions={{
+          style: {
+            borderRadius: '14px',
+            border: '1px solid #dce7e4',
+            fontWeight: 700,
+          },
+        }}
+      />
 
-      <div className="max-w-6xl mx-auto">
-        <Header />
+      <div className="mx-auto max-w-6xl">
+        <Header
+          isSocketConnected={isSocketConnected}
+          isOnline={isOnline}
+          canInstall={canInstall}
+          onInstall={installApp}
+          pumpState={pumpState}
+        />
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-          <Moisture currentMoisture={currentMoisture} isDry={isDry} pumpState={pumpState} />
+        <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+          <Moisture
+            currentMoisture={currentMoisture}
+            isDry={isDry}
+            pumpState={pumpState}
+            threshold={settings.moistureThreshold}
+          />
           <Controls
             settings={settings}
             updateSettings={updateSettings}
@@ -155,7 +263,7 @@ function App() {
           />
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           <Chart data={data} />
           <Logs logs={logs} />
         </div>
