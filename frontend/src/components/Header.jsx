@@ -1,6 +1,13 @@
-import { Download, Droplets, Wifi, WifiOff } from 'lucide-react';
+import { Download, Droplets, LogOut, Wifi, WifiOff } from 'lucide-react';
 
-export default function Header({ isSocketConnected, isOnline, canInstall, onInstall, pumpState }) {
+export default function Header({
+  isSocketConnected,
+  isOnline,
+  canInstall,
+  onInstall,
+  pumpState,
+  onLogout,
+}) {
   const connected = isOnline && isSocketConnected;
   const statusText = connected ? 'Jonli ulanish' : 'Qayta ulanmoqda';
   const pumpLabel = pumpState === 'ON' ? 'yoqilgan' : 'o`chirilgan';
@@ -37,6 +44,10 @@ export default function Header({ isSocketConnected, isOnline, canInstall, onInst
               <span>Ilovani o`rnatish</span>
             </button>
           )}
+          <button onClick={onLogout} className="badge transition-transform hover:-translate-y-0.5">
+            <LogOut size={14} />
+            <span>Chiqish</span>
+          </button>
         </div>
       </div>
     </header>

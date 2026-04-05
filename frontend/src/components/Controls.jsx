@@ -1,8 +1,25 @@
+import { useEffect, useRef, useState } from 'react';
 import { Bot, Gauge, Power, Settings2 } from 'lucide-react';
 
 export default function Controls({ settings, updateSettings, togglePump, pumpState }) {
   const isPumpOn = pumpState === 'ON';
   const manualLocked = settings.isAutoMode;
+  const [thresholdDraft, setThresholdDraft] = useState(settings.moistureThreshold);
+  const lastCommittedThresholdRef = useRef(settings.moistureThreshold);
+
+  useEffect(() => {
+    setThresholdDraft(settings.moistureThreshold);
+    lastCommittedThresholdRef.current = settings.moistureThreshold;
+  }, [settings.moistureThreshold]);
+
+  const commitThreshold = () => {
+    if (thresholdDraft === lastCommittedThresholdRef.current) {
+      return;
+    }
+
+    lastCommittedThresholdRef.current = thresholdDraft;
+    updateSettings(settings.isAutoMode, thresholdDraft);
+  };
 
   return (
     <div className="panel section-entrance rounded-3xl p-6 lg:col-span-2" data-delay="2">
@@ -32,14 +49,17 @@ export default function Controls({ settings, updateSettings, togglePump, pumpSta
           <div>
             <div className="mb-2 flex items-center justify-between text-sm font-semibold text-slate-700">
               <span className="flex items-center gap-2"><Gauge size={16} className="text-teal-700" /> Nasos yoqilish chegarasi</span>
-              <span className="rounded-full bg-teal-50 px-3 py-1 font-extrabold text-teal-700">{settings.moistureThreshold}%</span>
+              <span className="rounded-full bg-teal-50 px-3 py-1 font-extrabold text-teal-700">{thresholdDraft}%</span>
             </div>
             <input
               type="range"
               min="10"
               max="90"
-              value={settings.moistureThreshold}
-              onChange={(event) => updateSettings(settings.isAutoMode, Number.parseInt(event.target.value, 10))}
+              value={thresholdDraft}
+              onChange={(event) => setThresholdDraft(Number.parseInt(event.target.value, 10))}
+              onMouseUp={commitThreshold}
+              onTouchEnd={commitThreshold}
+              onBlur={commitThreshold}
               className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-teal-600"
             />
           </div>

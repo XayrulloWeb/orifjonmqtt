@@ -4,6 +4,7 @@ const cors = require('cors');
 const path = require('path');
 const net = require('net');
 const http = require('http');
+const crypto = require('crypto');
 
 const mqtt = require('mqtt');
 const { Server } = require('socket.io');
@@ -23,6 +24,10 @@ const MAX_MOISTURE = 100;
 const MIN_THRESHOLD = 10;
 const MAX_THRESHOLD = 90;
 const PUMP_ACTIONS = new Set(['ON', 'OFF']);
+const AUTH_SECRET = process.env.AUTH_SECRET || 'change-this-auth-secret';
+const AUTH_TOKEN_TTL_MS = Number(process.env.AUTH_TOKEN_TTL_MS || 1000 * 60 * 60 * 24 * 7);
+const ADMIN_LOGIN = process.env.ADMIN_LOGIN || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin12345';
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
@@ -43,6 +48,124 @@ app.use(express.json());
 let aedes;
 let mqttClient;
 let autoOffTimer = null;
+
+if (!process.env.AUTH_SECRET) {
+  console.warn('AUTH_SECRET is not set. Using fallback secret is unsafe for production.');
+}
+
+function base64UrlEncodeJson(value) {
+  return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+}
+
+function safeStringCompare(left, right) {
+  const leftBuffer = Buffer.from(String(left), 'utf8');
+  const rightBuffer = Buffer.from(String(right), 'utf8');
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function signTokenParts(headerPart, payloadPart) {
+  return crypto
+    .createHmac('sha256', AUTH_SECRET)
+    .update(`${headerPart}.${payloadPart}`)
+    .digest('base64url');
+}
+
+function createAuthToken(subject) {
+  const headerPart = base64UrlEncodeJson({ alg: 'HS256', typ: 'JWT' });
+  const expiresAtSeconds = Math.floor((Date.now() + AUTH_TOKEN_TTL_MS) / 1000);
+  const payloadPart = base64UrlEncodeJson({
+    sub: subject,
+    iat: Math.floor(Date.now() / 1000),
+    exp: expiresAtSeconds,
+  });
+  const signaturePart = signTokenParts(headerPart, payloadPart);
+
+  return {
+    token: `${headerPart}.${payloadPart}.${signaturePart}`,
+    expiresAt: new Date(expiresAtSeconds * 1000).toISOString(),
+  };
+}
+
+function extractBearerToken(authorizationHeader) {
+  if (typeof authorizationHeader !== 'string') {
+    return null;
+  }
+
+  const [scheme, token] = authorizationHeader.trim().split(/\s+/);
+  if (!scheme || !token || scheme.toLowerCase() !== 'bearer') {
+    return null;
+  }
+
+  return token;
+}
+
+function verifyAuthToken(token) {
+  if (typeof token !== 'string') {
+    return null;
+  }
+
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    return null;
+  }
+
+  const [headerPart, payloadPart, signaturePart] = parts;
+  const expectedSignature = signTokenParts(headerPart, payloadPart);
+  if (!safeStringCompare(signaturePart, expectedSignature)) {
+    return null;
+  }
+
+  try {
+    const payloadRaw = Buffer.from(payloadPart, 'base64url').toString('utf8');
+    const payload = JSON.parse(payloadRaw);
+    if (!payload?.sub || typeof payload.exp !== 'number') {
+      return null;
+    }
+
+    if (payload.exp * 1000 <= Date.now()) {
+      return null;
+    }
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function validateLoginPayload(body) {
+  if (!body || typeof body !== 'object') {
+    return 'Request body is required';
+  }
+
+  if (typeof body.login !== 'string' || body.login.trim().length < 2) {
+    return 'login must be a non-empty string';
+  }
+
+  if (typeof body.password !== 'string' || body.password.length < 4) {
+    return 'password must be a non-empty string';
+  }
+
+  return null;
+}
+
+function requireAuth(req, res, next) {
+  const token = extractBearerToken(req.headers.authorization);
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const session = verifyAuthToken(token);
+  if (!session) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  req.auth = session;
+  next();
+}
 
 function clearAutoOffTimer() {
   if (autoOffTimer) {
@@ -323,6 +446,38 @@ async function handleMoistureMessage(topic, message) {
   }
 }
 
+app.post('/api/auth/login', (req, res) => {
+  const validationError = validateLoginPayload(req.body);
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
+  }
+
+  const login = req.body.login.trim();
+  const password = req.body.password;
+  const isLoginValid = safeStringCompare(login, ADMIN_LOGIN);
+  const isPasswordValid = safeStringCompare(password, ADMIN_PASSWORD);
+
+  if (!isLoginValid || !isPasswordValid) {
+    return res.status(401).json({ error: 'Invalid login or password' });
+  }
+
+  const token = createAuthToken(ADMIN_LOGIN);
+  res.json(token);
+});
+
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  res.json({
+    login: req.auth.sub,
+    expiresAt: new Date(req.auth.exp * 1000).toISOString(),
+  });
+});
+
+app.post('/api/auth/logout', requireAuth, (req, res) => {
+  res.json({ success: true });
+});
+
+app.use('/api', requireAuth);
+
 app.get('/api/data', async (req, res) => {
   try {
     res.json((await getDashboardPayload()).data);
@@ -491,6 +646,20 @@ async function startServer() {
     await getDevice();
     await setupMqtt();
     await restoreAutoOffIfNeeded();
+
+    io.use((socket, next) => {
+      const socketToken =
+        socket.handshake?.auth?.token ||
+        extractBearerToken(socket.handshake?.headers?.authorization);
+
+      const session = verifyAuthToken(socketToken);
+      if (!session) {
+        return next(new Error('Unauthorized'));
+      }
+
+      socket.auth = session;
+      next();
+    });
 
     io.on('connection', async (socket) => {
       try {

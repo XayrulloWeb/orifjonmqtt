@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
 import toast, { Toaster } from 'react-hot-toast';
-import { api } from './api/axios';
+import {
+  api,
+  clearStoredAuthToken,
+  getStoredAuthToken,
+  storeAuthToken,
+} from './api/axios';
 
 import Header from './components/Header';
 import Moisture from './components/Moisture';
 import Controls from './components/Controls';
 import Chart from './components/Chart';
 import Logs from './components/Logs';
+import Login from './components/Login';
 
 const DEFAULT_SETTINGS = { isAutoMode: true, moistureThreshold: 40 };
 const SOCKET_URL = import.meta.env.DEV
@@ -24,6 +30,8 @@ function localizeServerError(errorMessage) {
     'Failed to fetch data': 'Ma`lumotlarni olishda xato',
     'Failed to fetch settings': 'Sozlamalarni olishda xato',
     'Failed to fetch logs': 'Jurnallarni olishda xato',
+    'Invalid login or password': 'Login yoki parol noto`g`ri',
+    Unauthorized: 'Avtorizatsiya talab qilinadi',
   };
 
   return map[errorMessage] || errorMessage;
@@ -66,6 +74,10 @@ function normalizePumpState(rawPumpState) {
 }
 
 function App() {
+  const [authToken, setAuthToken] = useState(() => getStoredAuthToken());
+  const [authStatus, setAuthStatus] = useState(() => (getStoredAuthToken() ? 'checking' : 'unauthenticated'));
+  const [isLoginLoading, setIsLoginLoading] = useState(false);
+
   const [data, setData] = useState([]);
   const [logs, setLogs] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -74,6 +86,25 @@ function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
   const [canInstall, setCanInstall] = useState(false);
+
+  const logout = useCallback((showToast = false, message = 'Hisobdan chiqildi') => {
+    clearStoredAuthToken();
+    setAuthToken(null);
+    setAuthStatus('unauthenticated');
+    setIsSocketConnected(false);
+
+    if (showToast) {
+      toast.success(message);
+    }
+  }, []);
+
+  const forceRelogin = useCallback((message = 'Sessiya tugadi. Qayta kiring.') => {
+    clearStoredAuthToken();
+    setAuthToken(null);
+    setAuthStatus('unauthenticated');
+    setIsSocketConnected(false);
+    toast.error(message);
+  }, []);
 
   const applyDashboardPayload = useCallback((payload) => {
     const safePayload = payload && typeof payload === 'object' ? payload : {};
@@ -99,9 +130,14 @@ function App() {
         pumpState: resSettings.data?.pumpState,
       });
     } catch (error) {
+      if (error?.response?.status === 401) {
+        forceRelogin();
+        return;
+      }
+
       console.error('Panel ma`lumotlarini olishda tarmoq xatosi', error);
     }
-  }, [applyDashboardPayload]);
+  }, [applyDashboardPayload, forceRelogin]);
 
   const installApp = useCallback(async () => {
     if (!deferredInstallPrompt) {
@@ -118,6 +154,37 @@ function App() {
     setDeferredInstallPrompt(null);
     setCanInstall(false);
   }, [deferredInstallPrompt]);
+
+  const handleLogin = useCallback(async ({ login, password }) => {
+    const toastId = toast.loading('Kirish tekshirilmoqda...');
+    setIsLoginLoading(true);
+
+    try {
+      const response = await api.post('/auth/login', {
+        login: login.trim(),
+        password,
+      });
+
+      const nextToken = response?.data?.token;
+      if (!nextToken) {
+        throw new Error('Token is missing in response');
+      }
+
+      storeAuthToken(nextToken);
+      setAuthToken(nextToken);
+      setAuthStatus('authenticated');
+      toast.success('Muvaffaqiyatli kirildi', { id: toastId });
+    } catch (error) {
+      const serverMessage = error?.response?.data?.error;
+      const errorText = serverMessage
+        ? localizeServerError(serverMessage)
+        : 'Kirishda xatolik yuz berdi';
+      toast.error(errorText, { id: toastId });
+      setAuthStatus('unauthenticated');
+    } finally {
+      setIsLoginLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     const markOnline = () => setIsOnline(true);
@@ -155,12 +222,48 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!authToken) {
+      setAuthStatus('unauthenticated');
+      return;
+    }
+
+    let isCancelled = false;
+    setAuthStatus('checking');
+
+    api
+      .get('/auth/me')
+      .then(() => {
+        if (!isCancelled) {
+          setAuthStatus('authenticated');
+        }
+      })
+      .catch(() => {
+        if (!isCancelled) {
+          clearStoredAuthToken();
+          setAuthToken(null);
+          setAuthStatus('unauthenticated');
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [authToken]);
+
+  useEffect(() => {
+    if (authStatus !== 'authenticated' || !authToken) {
+      return;
+    }
+
     const initialFetchTimeout = setTimeout(() => {
       fetchData();
     }, 0);
 
     const socket = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
+      auth: {
+        token: authToken,
+      },
     });
 
     const handleConnect = () => setIsSocketConnected(true);
@@ -171,6 +274,10 @@ function App() {
     socket.on('dashboard:update', applyDashboardPayload);
     socket.on('connect_error', (error) => {
       setIsSocketConnected(false);
+      if (error?.message === 'Unauthorized') {
+        forceRelogin();
+        return;
+      }
       console.error('Socket ulanishida xato', error);
     });
 
@@ -186,7 +293,7 @@ function App() {
       socket.off('dashboard:update', applyDashboardPayload);
       socket.disconnect();
     };
-  }, [applyDashboardPayload, fetchData]);
+  }, [authStatus, authToken, applyDashboardPayload, fetchData, forceRelogin]);
 
   const togglePump = async (action) => {
     const toastId = toast.loading('Buyruq yuborilmoqda...');
@@ -196,6 +303,12 @@ function App() {
       toast.success(`Nasos ${action === 'ON' ? 'yoqildi' : 'o`chirildi'}`, { id: toastId });
       fetchData();
     } catch (error) {
+      if (error?.response?.status === 401) {
+        forceRelogin();
+        toast.dismiss(toastId);
+        return;
+      }
+
       const serverMessage = error?.response?.data?.error;
       const errorText = serverMessage
         ? localizeServerError(serverMessage)
@@ -214,6 +327,11 @@ function App() {
       });
       toast.success('Sozlamalar saqlandi');
     } catch (error) {
+      if (error?.response?.status === 401) {
+        forceRelogin();
+        return;
+      }
+
       const serverMessage = error?.response?.data?.error;
       const errorText = serverMessage
         ? localizeServerError(serverMessage)
@@ -227,7 +345,7 @@ function App() {
   const isDry = currentMoisture < settings.moistureThreshold;
 
   return (
-    <div className="app-shell min-h-screen p-4 md:p-8">
+    <>
       <Toaster
         position="top-right"
         toastOptions={{
@@ -239,36 +357,43 @@ function App() {
         }}
       />
 
-      <div className="mx-auto max-w-6xl">
-        <Header
-          isSocketConnected={isSocketConnected}
-          isOnline={isOnline}
-          canInstall={canInstall}
-          onInstall={installApp}
-          pumpState={pumpState}
-        />
+      {authStatus !== 'authenticated' ? (
+        <Login onSubmit={handleLogin} isLoading={isLoginLoading || authStatus === 'checking'} />
+      ) : (
+        <div className="app-shell min-h-screen p-4 md:p-8">
+          <div className="mx-auto max-w-6xl">
+            <Header
+              isSocketConnected={isSocketConnected}
+              isOnline={isOnline}
+              canInstall={canInstall}
+              onInstall={installApp}
+              pumpState={pumpState}
+              onLogout={() => logout(true, 'Hisobdan chiqdingiz')}
+            />
 
-        <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <Moisture
-            currentMoisture={currentMoisture}
-            isDry={isDry}
-            pumpState={pumpState}
-            threshold={settings.moistureThreshold}
-          />
-          <Controls
-            settings={settings}
-            updateSettings={updateSettings}
-            togglePump={togglePump}
-            pumpState={pumpState}
-          />
-        </div>
+            <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+              <Moisture
+                currentMoisture={currentMoisture}
+                isDry={isDry}
+                pumpState={pumpState}
+                threshold={settings.moistureThreshold}
+              />
+              <Controls
+                settings={settings}
+                updateSettings={updateSettings}
+                togglePump={togglePump}
+                pumpState={pumpState}
+              />
+            </div>
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <Chart data={data} />
-          <Logs logs={logs} />
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+              <Chart data={data} />
+              <Logs logs={logs} />
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
+      )}
+    </>
   );
 }
 
