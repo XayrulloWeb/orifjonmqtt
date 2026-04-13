@@ -24,6 +24,10 @@ const MAX_MOISTURE = 100;
 const MIN_THRESHOLD = 10;
 const MAX_THRESHOLD = 90;
 const PUMP_ACTIONS = new Set(['ON', 'OFF']);
+const PUMP_REQUEST_ACTIONS = new Set(['ON', 'OFF', 'TOGGLE']);
+const MQTT_TOPIC_MOISTURE = 'smart_watering/moisture';
+const MQTT_TOPIC_PUMP = 'smart_watering/pump';
+const MQTT_TOPIC_PUMP_REQUEST = 'smart_watering/pump/request';
 const AUTH_SECRET = process.env.AUTH_SECRET || 'change-this-auth-secret';
 const AUTH_TOKEN_TTL_MS = Number(process.env.AUTH_TOKEN_TTL_MS || 1000 * 60 * 60 * 24 * 7);
 const ADMIN_LOGIN = process.env.ADMIN_LOGIN || 'admin';
@@ -337,7 +341,7 @@ async function publishPumpAction({ action, mode, deviceId, reason }) {
     return { changed: false, device };
   }
 
-  await publishToMqtt('smart_watering/pump', action);
+  await publishToMqtt(MQTT_TOPIC_PUMP, action);
 
   const now = new Date();
   const [_, updatedDevice] = await prisma.$transaction([
@@ -387,7 +391,7 @@ async function canAutoTurnOn(deviceId) {
 }
 
 async function handleMoistureMessage(topic, message) {
-  if (topic !== 'smart_watering/moisture') {
+  if (topic !== MQTT_TOPIC_MOISTURE) {
     return;
   }
 
@@ -443,6 +447,40 @@ async function handleMoistureMessage(topic, message) {
     await emitDashboardUpdate();
   } catch (error) {
     console.error('MQTT message handler error:', error);
+  }
+}
+
+async function handlePumpRequestMessage(topic, message) {
+  if (topic !== MQTT_TOPIC_PUMP_REQUEST) {
+    return;
+  }
+
+  const request = message.toString().trim().toUpperCase();
+  if (!PUMP_REQUEST_ACTIONS.has(request)) {
+    console.warn(`Ignored pump request with invalid action: ${request || '(empty)'}`);
+    return;
+  }
+
+  try {
+    const device = await getDevice();
+
+    if (device.isAutoMode) {
+      console.log('Ignored device button request because auto mode is enabled');
+      return;
+    }
+
+    const action = request === 'TOGGLE' ? (device.pumpState === 'ON' ? 'OFF' : 'ON') : request;
+
+    await publishPumpAction({
+      action,
+      mode: 'DEVICE',
+      deviceId: device.id,
+      reason: 'device_button',
+    });
+
+    await emitDashboardUpdate();
+  } catch (error) {
+    console.error('MQTT pump request handler error:', error);
   }
 }
 
@@ -618,9 +656,14 @@ async function setupMqtt() {
     mqttClient.once('connect', () => {
       clearTimeout(timeout);
       console.log('Internal MQTT client connected');
-      mqttClient.subscribe('smart_watering/moisture', (error) => {
+      mqttClient.subscribe(MQTT_TOPIC_MOISTURE, (error) => {
         if (error) {
-          console.error('Failed to subscribe smart_watering/moisture:', error);
+          console.error(`Failed to subscribe ${MQTT_TOPIC_MOISTURE}:`, error);
+        }
+      });
+      mqttClient.subscribe(MQTT_TOPIC_PUMP_REQUEST, (error) => {
+        if (error) {
+          console.error(`Failed to subscribe ${MQTT_TOPIC_PUMP_REQUEST}:`, error);
         }
       });
       resolve();
@@ -638,6 +681,7 @@ async function setupMqtt() {
 
   mqttClient.on('message', (topic, message) => {
     void handleMoistureMessage(topic, message);
+    void handlePumpRequestMessage(topic, message);
   });
 }
 

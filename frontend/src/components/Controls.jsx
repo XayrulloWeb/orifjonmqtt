@@ -96,6 +96,9 @@ export default function Controls({ settings, updateSettings, togglePump, pumpSta
               ? 'Qo`lda buyruq berishdan oldin avto rejimni o`chiring.'
               : 'Nasos buyruqlari yuborishga tayyor.'}
           </p>
+          <p className="mt-2 text-xs font-medium text-slate-500">
+            Qurilma tugmasi orqali boshqaruv ham avto rejim o`chirilganda ishlaydi.
+          </p>
         </section>
       </div>
     </div>

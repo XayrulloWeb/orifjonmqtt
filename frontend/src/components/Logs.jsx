@@ -9,6 +9,10 @@ function getModeLabel(mode) {
     return 'Qo`lda';
   }
 
+  if (mode === 'DEVICE') {
+    return 'Qurilma tugmasi';
+  }
+
   return 'Tizim';
 }
 
